@@ -1,5 +1,6 @@
 package org.egov.web.contract;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.*;
 import org.egov.domain.model.OtpRequestType;
 
@@ -9,6 +10,7 @@ import org.egov.domain.model.OtpRequestType;
 @NoArgsConstructor
 @Setter
 public class OtpRequest {
+    @JsonProperty("RequestInfo")
     private RequestInfo requestInfo;
     private Otp otp;
 

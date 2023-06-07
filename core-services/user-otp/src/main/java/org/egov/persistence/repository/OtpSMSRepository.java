@@ -5,13 +5,17 @@ import org.egov.domain.model.Category;
 import org.egov.domain.model.OtpRequest;
 import org.egov.domain.service.LocalizationService;
 import org.egov.persistence.contract.SMSRequest;
+import org.egov.persistence.contract.WorksSmsRequest;
 import org.egov.tracer.kafka.CustomKafkaTemplate;
+import org.egov.web.contract.RequestInfo;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Repository;
 import org.springframework.stereotype.Service;
 
 import javax.validation.constraints.NotNull;
+import java.text.MessageFormat;
+import java.util.HashMap;
 import java.util.Map;
 
 import static java.lang.String.format;
@@ -31,14 +35,20 @@ public class OtpSMSRepository {
     @Value("${egov.localisation.tenantid.strip.suffix.count}")
     private int tenantIdStripSuffixCount;
 
-    private CustomKafkaTemplate<String, SMSRequest> kafkaTemplate;
+    private CustomKafkaTemplate<String, Object> kafkaTemplate;
     private String smsTopic;
+
+    @Value("${works.notification.sms.topic}")
+    private String worksSMSTopic;
+
+    @Value("${sms.isAdditonalFieldRequired}")
+    private boolean isAdditonalFieldReuired;
 
     @Autowired
     private LocalizationService localizationService;
 
     @Autowired
-    public OtpSMSRepository(CustomKafkaTemplate<String, SMSRequest> kafkaTemplate,
+    public OtpSMSRepository(CustomKafkaTemplate<String, Object> kafkaTemplate,
                             @Value("${sms.topic}") String smsTopic) {
         this.kafkaTemplate = kafkaTemplate;
         this.smsTopic = smsTopic;
@@ -48,17 +58,39 @@ public class OtpSMSRepository {
     public void send(OtpRequest otpRequest, String otpNumber) {
 		Long currentTime = System.currentTimeMillis() + maxExecutionTime;
 		final String message = getMessage(otpNumber, otpRequest);
-        kafkaTemplate.send(smsTopic, new SMSRequest(otpRequest.getMobileNumber(), message, Category.OTP, currentTime));
+
+        if(isAdditonalFieldReuired){
+            Map<String,Object> additonalFields= new HashMap<>();
+            if (otpRequest.isRegistrationRequestType())
+                additonalFields.put("templateCode", LOCALIZATION_KEY_REGISTER_SMS);
+            else if (otpRequest.isLoginRequestType())
+                additonalFields.put("templateCode", LOCALIZATION_KEY_LOGIN_SMS);
+            else
+                additonalFields.put("templateCode", LOCALIZATION_KEY_PWD_RESET_SMS);
+
+            additonalFields.put("requestInfo",otpRequest.getRequestInfo());
+            additonalFields.put("tenantId",otpRequest.getTenantId());
+            WorksSmsRequest smsRequest=WorksSmsRequest.builder().message(message).additionalFields(additonalFields)
+                    .mobileNumber(otpRequest.getMobileNumber()).category(Category.OTP).expiryTime(currentTime).build();
+            kafkaTemplate.send(worksSMSTopic, smsRequest);
+
+        }else{
+            kafkaTemplate.send(smsTopic, new SMSRequest(otpRequest.getMobileNumber(), message, Category.OTP, currentTime));
+        }
+
     }
 
     private String getMessage(String otpNumber, OtpRequest otpRequest) {
         final String messageFormat = getMessageFormat(otpRequest);
-        return format(messageFormat, otpNumber);
+       return isAdditonalFieldReuired ?  messageFormat.replace("{otp}",otpNumber): format(messageFormat, otpNumber);
+
     }
 
     private String getMessageFormat(OtpRequest otpRequest) {
         String tenantId = getRequiredTenantId(otpRequest.getTenantId());
-        Map<String, String> localisedMsgs = localizationService.getLocalisedMessages(tenantId, "en_IN", "egov-user");
+        RequestInfo requestInfo=otpRequest.getRequestInfo();
+        String locale=requestInfo.getMsgId().split("\\|")[1];
+        Map<String, String> localisedMsgs = localizationService.getLocalisedMessages(tenantId, locale, "egov-user");
         if (localisedMsgs.isEmpty()) {
             log.info("Localization Service didn't return any msgs so using default...");
             localisedMsgs.put(LOCALIZATION_KEY_REGISTER_SMS, "Dear Citizen, Your OTP to complete your mSeva Registration is %s.");
